@@ -3,7 +3,7 @@ name: Deploy to EC2 on Push
 on:
   push:
     branches:
-      - main
+      - main  # Or whatever your main deployment branch is
 
 jobs:
   deploy:
@@ -24,22 +24,37 @@ jobs:
     - name: SSH & Deploy Docker
       run: |
         ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-          cd ~/two-tier-flask-app
+          cd ~
+          if [ ! -d "two-tier-flask-app" ]; then
+            echo "Cloning repository..."
+            git clone https://github.com/${{ github.repository }}.git two-tier-flask-app
+          fi
+
+          cd two-tier-flask-app
+
+          echo "Checking out branch: ${{ github.ref_name }}"
+          git fetch origin
+          git checkout ${{ github.ref_name }}
+          git reset --hard origin/${{ github.ref_name }}
 
           echo "Stopping old containers..."
-          docker stop mysql || true
-          docker rm mysql || true
-          docker stop two-tier-backend || true
-          docker rm two-tier-backend || true
+          docker stop mysql || true && docker rm mysql || true
+          docker stop two-tier-backend || true && docker rm two-tier-backend || true
 
-          echo "Pulling latest code..."
-          git pull origin main
+          echo "Freeing port 5000 if used..."
+          CONTAINER_ID=$(docker ps --filter "publish=5000" --format "{{.ID}}")
+          if [ -n "$CONTAINER_ID" ]; then
+            echo "Stopping container using port 5000..."
+            docker stop $CONTAINER_ID && docker rm $CONTAINER_ID
+          else
+            echo "Port 5000 is free"
+          fi
 
           echo "Rebuilding Docker image..."
           docker build -t two-tier-backend .
 
-          echo "Creating Docker network if needed..."
-          docker network create two-tier || true
+          echo "Creating Docker network (if not exists)..."
+          docker network inspect two-tier >/dev/null 2>&1 || docker network create two-tier
 
           echo "Starting MySQL container..."
           docker run -d --name mysql --network two-tier \
