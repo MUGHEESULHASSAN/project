@@ -1,0 +1,59 @@
+name: Deploy to EC2 on Push
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: SSH & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Setup SSH
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+    - name: SSH & Deploy Docker
+      run: |
+        ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+          cd ~/two-tier-flask-app
+
+          echo "Stopping old containers..."
+          docker stop mysql || true
+          docker rm mysql || true
+          docker stop two-tier-backend || true
+          docker rm two-tier-backend || true
+
+          echo "Pulling latest code..."
+          git pull origin main
+
+          echo "Rebuilding Docker image..."
+          docker build -t two-tier-backend .
+
+          echo "Creating Docker network if needed..."
+          docker network create two-tier || true
+
+          echo "Starting MySQL container..."
+          docker run -d --name mysql --network two-tier \
+            -e MYSQL_ROOT_PASSWORD=root \
+            -e MYSQL_DATABASE=devops mysql
+
+          echo "Waiting for MySQL to be ready..."
+          sleep 15
+
+          echo "Starting Flask container..."
+          docker run -d --name two-tier-backend -p 5000:5000 --network two-tier \
+            -e MYSQL_HOST=mysql \
+            -e MYSQL_USER=root \
+            -e MYSQL_PASSWORD=root \
+            -e MYSQL_DB=devops \
+            two-tier-backend
+        EOF
